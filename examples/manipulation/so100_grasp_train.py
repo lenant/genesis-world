@@ -1,6 +1,6 @@
 import argparse
-import re
 import pickle
+import re
 from importlib import metadata
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from behavior_cloning import BehaviorCloning
 
 import genesis as gs
 
-from grasp_env import GraspEnv
+from so100_grasp_env import GraspEnv
 
 
 def get_train_cfg(exp_name):
@@ -118,21 +118,26 @@ def get_train_cfg(exp_name):
 def get_task_cfgs():
     env_cfg = {
         "num_envs": 10,
-        "num_actions": 6,
-        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+        "num_actions": 5,
+        "action_scales": [0.035, 0.035, 0.035, 0.035, 0.035],
         "episode_length_s": 3.0,
         "ctrl_dt": 0.01,
-        "box_size": [0.08, 0.03, 0.06],
+        "box_size": [0.04, 0.04, 0.04],
+        "object_x_bounds": (-0.12, 0.12),
+        "object_y_bounds": (-0.32, -0.24),
+        "object_z": 0.02,
+        "keypoint_unit_length": 0.04,
+        "scripted_lift_height": 0.10,
         "image_resolution": (64, 64),
         "policy_cameras": {
             "left_cam": {
-                "pos": (1.05, -0.66, 0.50),
-                "lookat": (0.38, 0.0, 0.10),
+                "pos": (0.35, -0.75, 0.35),
+                "lookat": (0.0, -0.28, 0.08),
                 "fov": 55,
             },
             "right_cam": {
-                "pos": (1.25, 0.32, 0.46),
-                "lookat": (0.38, 0.0, 0.10),
+                "pos": (0.45, -0.22, 0.32),
+                "lookat": (0.0, -0.28, 0.08),
                 "fov": 55,
             },
         },
@@ -141,13 +146,25 @@ def get_task_cfgs():
     reward_scales = {
         "keypoints": 1.0,
     }
-    # panda robot specific
+    # SO-100 robot specific
     robot_cfg = {
-        "ee_link_name": "hand",
-        "gripper_link_names": ["left_finger", "right_finger"],
-        "default_arm_dof": [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],
-        "default_gripper_dof": [0.04, 0.04],
-        "ik_method": "dls_ik",
+        "mjcf_file": "xml/so_arm100/so_arm100.xml",
+        "arm_joint_names": ["Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll"],
+        "gripper_joint_names": ["Jaw"],
+        "ee_link_name": "Fixed_Jaw",
+        "gripper_link_names": ["Fixed_Jaw", "Moving_Jaw"],
+        "default_arm_dof": [0.0, -1.57079, 1.57079, 1.57079, -1.57079],
+        "default_gripper_dof": [0.65],
+        "gripper_open_dof": [0.65],
+        "gripper_close_dof": [0.0],
+        "arm_lower_limits": [-2.2, -3.14158, 0.0, -2.0, -3.14158],
+        "arm_upper_limits": [2.2, 0.2, 3.14158, 1.8, 3.14158],
+        "fixed_finger_tip_offset": [0.012, -0.08, 0.0],
+        "moving_finger_tip_offset": [-0.009, -0.055, 0.0],
+        "dof_kp": [80, 80, 60, 40, 30, 20],
+        "dof_kv": [8, 8, 6, 4, 3, 2],
+        "dof_force_lower": [-35, -35, -35, -35, -35, -15],
+        "dof_force_upper": [35, 35, 35, 35, 35, 15],
     }
     return env_cfg, reward_scales, robot_cfg
 
@@ -169,7 +186,7 @@ def load_teacher_policy(env, rl_train_cfg, exp_name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--exp_name", type=str, default="grasp")
+    parser.add_argument("-e", "--exp_name", type=str, default="so100_grasp")
     parser.add_argument(
         "--teacher_exp_name",
         type=str,
@@ -277,9 +294,9 @@ if __name__ == "__main__":
 """
 # training
 
-# to train the RL policy
-python examples/manipulation/grasp_train.py --stage=rl
+# to train the SO-100 RL policy
+python examples/manipulation/so100_grasp_train.py --stage=rl
 
-# to train the BC policy (requires RL policy to be trained first)
-python examples/manipulation/grasp_train.py --stage=bc
+# to train the SO-100 BC policy (requires RL policy to be trained first)
+python examples/manipulation/so100_grasp_train.py --stage=bc
 """
