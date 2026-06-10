@@ -28,7 +28,7 @@ def load_rl_policy(env, train_cfg, log_dir):
         raise FileNotFoundError(f"No checkpoint files found in {log_dir}")
 
     last_ckpt = max(checkpoint_files, key=lambda f: int(re.search(r"\d+", f.stem).group()))
-    runner.load(last_ckpt)
+    runner.load(last_ckpt, map_location=gs.device)
     print(f"Loaded RL checkpoint from {last_ckpt}")
     return runner.get_inference_policy(device=gs.device)
 
@@ -63,6 +63,12 @@ def main():
         "--record",
         action="store_true",
         help="Record stereo camera videos during evaluation",
+    )
+    parser.add_argument(
+        "-v",
+        "--vis",
+        action="store_true",
+        help="Show the interactive Genesis viewer during evaluation.",
     )
     parser.add_argument(
         "--record_policy_cameras",
@@ -208,7 +214,7 @@ def main():
         env_cfg=env_cfg,
         reward_cfg=reward_cfg,
         robot_cfg=robot_cfg,
-        show_viewer=False,
+        show_viewer=args.vis,
     )
 
     if args.stage == "rl":

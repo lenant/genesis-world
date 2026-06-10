@@ -28,7 +28,7 @@ def load_rl_policy(env, train_cfg, log_dir):
         raise FileNotFoundError(f"No checkpoint files found in {log_dir}")
 
     last_ckpt = max(checkpoint_files, key=lambda f: int(re.search(r"\d+", f.stem).group()))
-    runner.load(last_ckpt)
+    runner.load(last_ckpt, map_location=gs.device)
     print(f"Loaded RL checkpoint from {last_ckpt}")
 
     return runner.get_inference_policy(device=gs.device)
