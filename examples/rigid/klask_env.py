@@ -19,8 +19,6 @@ from klask_common import (
     BISCUIT_Z,
     BOARD_HEIGHT,
     BOARD_WIDTH,
-    CTRL_DT,
-    FRAME_SKIP,
     GOAL_WIDTH,
     HANDLE_SPEED,
     LEFT_START,
@@ -72,6 +70,9 @@ class KlaskSelfPlayEnv:
             rendered_envs=rendered_envs,
             max_collision_pairs=env_cfg["max_collision_pairs"],
             show_fps=env_cfg.get("show_fps", False),
+            sim_dt=env_cfg["sim_dt"],
+            sim_substeps=env_cfg["sim_substeps"],
+            constraint_timeconst=env_cfg["constraint_timeconst"],
         )
         build_board(self.scene)
         self.left = add_striker(self.scene, "left")
@@ -99,6 +100,7 @@ class KlaskSelfPlayEnv:
         self.right_action = torch.zeros_like(self.left_action)
         self.left_contact = torch.zeros((self.num_boards,), dtype=torch.bool, device=self.device)
         self.right_contact = torch.zeros_like(self.left_contact)
+        self.last_ball_toucher = torch.full((self.num_boards,), -1, dtype=torch.long, device=self.device)
         self.new_biscuit_attachments = torch.zeros((self.num_boards, 2), dtype=gs.tc_float, device=self.device)
 
         self.biscuit_attached_to = torch.full(
@@ -200,6 +202,7 @@ class KlaskSelfPlayEnv:
         self.biscuit_offsets[board_idx] = 0
         self.left_action[board_idx] = 0
         self.right_action[board_idx] = 0
+        self.last_ball_toucher[board_idx] = -1
         self.new_biscuit_attachments[board_idx] = 0
 
         side_idx = self._side_indices(board_idx)
@@ -266,12 +269,36 @@ class KlaskSelfPlayEnv:
         )
         entity.set_pos(pos, zero_velocity=False)
         entity.set_quat(self.identity_quat.repeat(self.num_boards, 1), zero_velocity=False)
+        vel = entity.get_dofs_velocity()
+        speed = torch.norm(vel[:, :2], dim=1)
+        scale = torch.where(speed > MAX_HANDLE_VEL, MAX_HANDLE_VEL / torch.clamp(speed, min=1e-6), 1.0)
+        vel[:, :2] *= scale[:, None]
+        vel[:, 2:] = 0.0
+        entity.set_dofs_velocity(vel)
 
-    def _limit_body_speed(self, entity, max_speed):
+    def _constrain_disc(self, entity, z, max_speed, *, upright=True):
+        pos = entity.get_pos()
+        pos[:, 2] = z
+        entity.set_pos(pos, zero_velocity=False)
+        if upright:
+            entity.set_quat(self.identity_quat.repeat(self.num_boards, 1), zero_velocity=False)
+
         vel = entity.get_dofs_velocity()
         speed = torch.norm(vel[:, :2], dim=1)
         scale = torch.where(speed > max_speed, max_speed / torch.clamp(speed, min=1e-6), 1.0)
         vel[:, :2] *= scale[:, None]
+        vel[:, 2] = 0.0
+        if upright:
+            vel[:, 3:] = 0.0
+        else:
+            angular_speed = torch.norm(vel[:, 3:], dim=1)
+            angular_max = max_speed / BALL_RADIUS
+            angular_scale = torch.where(
+                angular_speed > angular_max,
+                angular_max / torch.clamp(angular_speed, min=1e-6),
+                1.0,
+            )
+            vel[:, 3:] *= angular_scale[:, None]
         entity.set_dofs_velocity(vel)
 
     def _pin_attached_biscuits(self):
@@ -350,15 +377,28 @@ class KlaskSelfPlayEnv:
     def _contacts_with_ball(self):
         ball_xy = self._body_xy(self.ball)
         contact_distance = STRIKER_RADIUS + BALL_RADIUS + 0.003
-        self.left_contact = torch.norm(ball_xy - self._body_xy(self.left), dim=1) <= contact_distance
-        self.right_contact = torch.norm(ball_xy - self._body_xy(self.right), dim=1) <= contact_distance
+        left_dist = torch.norm(ball_xy - self._body_xy(self.left), dim=1)
+        right_dist = torch.norm(ball_xy - self._body_xy(self.right), dim=1)
+        self.left_contact = left_dist <= contact_distance
+        self.right_contact = right_dist <= contact_distance
+
+        touched_by = torch.full((self.num_boards,), -1, dtype=torch.long, device=self.device)
+        touched_by = torch.where(self.left_contact, torch.zeros_like(touched_by), touched_by)
+        right_is_clearer = ~self.left_contact | (right_dist < left_dist)
+        touched_by = torch.where(self.right_contact & right_is_clearer, torch.ones_like(touched_by), touched_by)
+        self.last_ball_toucher = torch.where(touched_by >= 0, touched_by, self.last_ball_toucher)
 
     def _detect_scores(self):
         ball_pos = self.ball.get_pos()
         half_w = BOARD_WIDTH / 2.0
+        half_h = BOARD_HEIGHT / 2.0
         goal_half = GOAL_WIDTH / 2.0
         left_goal = (ball_pos[:, 0] > half_w + BALL_RADIUS) & (torch.abs(ball_pos[:, 1]) <= goal_half)
         right_goal = (ball_pos[:, 0] < -half_w - BALL_RADIUS) & (torch.abs(ball_pos[:, 1]) <= goal_half)
+        off_right = ball_pos[:, 0] > half_w + BALL_RADIUS
+        off_left = ball_pos[:, 0] < -half_w - BALL_RADIUS
+        off_y = torch.abs(ball_pos[:, 1]) > half_h + BALL_RADIUS
+        out_of_bounds = off_y | (off_right & ~left_goal) | (off_left & ~right_goal)
 
         left_biscuits = torch.sum(self.biscuit_attached_to == 0, dim=1) >= self.biscuit_score_threshold
         right_biscuits = torch.sum(self.biscuit_attached_to == 1, dim=1) >= self.biscuit_score_threshold
@@ -368,14 +408,22 @@ class KlaskSelfPlayEnv:
         scored_by = torch.where(left_goal | right_biscuits, torch.zeros_like(scored_by), scored_by)
         scored_by = torch.where((right_goal | left_biscuits) & (scored_by == -1), torch.ones_like(scored_by), scored_by)
 
+        fallback_offender = torch.where(ball_pos[:, 0] >= 0.0, torch.zeros_like(scored_by), torch.ones_like(scored_by))
+        offender = torch.where(self.last_ball_toucher >= 0, self.last_ball_toucher, fallback_offender)
+        out_scored_by = 1 - offender
+        scored_by = torch.where(out_of_bounds & (scored_by == -1), out_scored_by, scored_by)
+
         for idx in (left_goal | right_goal).nonzero(as_tuple=False).reshape((-1,)).detach().cpu().tolist():
             score_reason[idx] = "goal"
         for idx in (left_biscuits | right_biscuits).nonzero(as_tuple=False).reshape((-1,)).detach().cpu().tolist():
             if score_reason[idx] == "none":
                 score_reason[idx] = "biscuits"
+        for idx in out_of_bounds.nonzero(as_tuple=False).reshape((-1,)).detach().cpu().tolist():
+            if score_reason[idx] == "none":
+                score_reason[idx] = "out_of_bounds"
         self.last_score_reason = score_reason
         self.last_scored_by = scored_by.clone()
-        return scored_by
+        return scored_by, out_of_bounds
 
     def _canonical_state(self, side):
         sign = 1.0 if side == "left" else -1.0
@@ -503,7 +551,7 @@ class KlaskSelfPlayEnv:
             "terminal": torch.zeros((self.num_boards,), dtype=gs.tc_float, device=self.device),
         }
 
-    def _compute_reward(self, previous_left_ball_x, previous_right_ball_x, scored_by):
+    def _compute_reward(self, previous_left_ball_x, previous_right_ball_x, scored_by, out_of_bounds):
         left_components = self._side_reward_components(
             "left",
             previous_left_ball_x,
@@ -520,10 +568,22 @@ class KlaskSelfPlayEnv:
         rewards = {}
         for name in self.reward_names:
             if name == "terminal":
+                terminal_value = torch.where(
+                    out_of_bounds,
+                    torch.full(
+                        (self.num_boards,),
+                        self.reward_cfg["out_of_bounds_penalty"],
+                        dtype=gs.tc_float,
+                        device=self.device,
+                    ),
+                    torch.full(
+                        (self.num_boards,), self.reward_cfg["terminal_goal"], dtype=gs.tc_float, device=self.device
+                    ),
+                )
                 left_terminal = torch.where(
                     scored_by == 0,
-                    self.reward_cfg["terminal_goal"],
-                    torch.where(scored_by == 1, -self.reward_cfg["terminal_goal"], 0.0),
+                    terminal_value,
+                    torch.where(scored_by == 1, -terminal_value, 0.0),
                 )
                 right_terminal = -left_terminal
                 rewards[name] = torch.cat([left_terminal, right_terminal], dim=0)
@@ -546,20 +606,25 @@ class KlaskSelfPlayEnv:
 
         self._apply_striker_actions(actions)
         for _ in range(self.frame_skip):
+            self._constrain_striker(self.left, "left")
+            self._constrain_striker(self.right, "right")
+            self._constrain_disc(self.ball, BALL_Z, self.ball_max_speed, upright=False)
+            for biscuit in self.biscuits:
+                self._constrain_disc(biscuit, BISCUIT_Z, self.biscuit_max_speed)
             self._pin_attached_biscuits()
             self.scene.step()
             self._constrain_striker(self.left, "left")
             self._constrain_striker(self.right, "right")
             self._pin_attached_biscuits()
-            self._limit_body_speed(self.ball, self.ball_max_speed)
+            self._constrain_disc(self.ball, BALL_Z, self.ball_max_speed, upright=False)
             for biscuit in self.biscuits:
-                self._limit_body_speed(biscuit, self.biscuit_max_speed)
+                self._constrain_disc(biscuit, BISCUIT_Z, self.biscuit_max_speed)
 
         self.episode_length_buf += 1
         self._contacts_with_ball()
         self._update_biscuit_attachment_state()
         self._pin_attached_biscuits()
-        scored_by = self._detect_scores()
+        scored_by, out_of_bounds = self._detect_scores()
 
         board_done = scored_by >= 0
         board_timeout = self.episode_length_buf[: self.num_boards] >= self.max_episode_length
@@ -567,7 +632,7 @@ class KlaskSelfPlayEnv:
         self.reset_buf = torch.cat([board_reset, board_reset], dim=0).to(gs.tc_int)
         self.extras["time_outs"] = torch.cat([board_timeout, board_timeout], dim=0).to(gs.tc_float)
 
-        self._compute_reward(previous_left_ball_x, previous_right_ball_x, scored_by)
+        self._compute_reward(previous_left_ball_x, previous_right_ball_x, scored_by, out_of_bounds)
         done_boards = board_reset.nonzero(as_tuple=False).reshape((-1,))
         self.extras["episode"] = {}
         if len(done_boards) > 0:
@@ -589,12 +654,17 @@ class KlaskSelfPlayEnv:
 
 
 def get_default_env_cfg(num_boards):
+    sim_dt = 1 / 480
+    frame_skip = 8
     return {
         "num_boards": num_boards,
         "num_actions": 2,
         "episode_length_s": 15.0,
-        "ctrl_dt": CTRL_DT,
-        "frame_skip": FRAME_SKIP,
+        "sim_dt": sim_dt,
+        "sim_substeps": 4,
+        "constraint_timeconst": 0.004,
+        "ctrl_dt": sim_dt * frame_skip,
+        "frame_skip": frame_skip,
         # The playground uses a much faster manual-control speed. PPO starts with
         # near-random saturated actions, so training uses the stabler KLASK-2 speed.
         "handle_speed": 1.8,
@@ -614,6 +684,7 @@ def get_default_env_cfg(num_boards):
 def get_default_reward_cfg():
     return {
         "terminal_goal": 12.0,
+        "out_of_bounds_penalty": 4.0,
         "progress": 0.6,
         "puck_position": 0.02,
         "puck_speed": 0.08,

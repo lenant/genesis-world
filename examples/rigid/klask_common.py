@@ -235,13 +235,22 @@ def add_biscuits(scene):
     ]
 
 
-def create_scene(*, show_viewer=False, rendered_envs=1, max_collision_pairs=256, show_fps=False):
+def create_scene(
+    *,
+    show_viewer=False,
+    rendered_envs=1,
+    max_collision_pairs=256,
+    show_fps=False,
+    sim_dt=SIM_DT,
+    sim_substeps=4,
+    constraint_timeconst=0.004,
+):
     return gs.Scene(
-        sim_options=gs.options.SimOptions(dt=SIM_DT, substeps=4, gravity=(0.0, 0.0, -9.81)),
+        sim_options=gs.options.SimOptions(dt=sim_dt, substeps=sim_substeps, gravity=(0.0, 0.0, -9.81)),
         rigid_options=gs.options.RigidOptions(
             enable_collision=True,
             box_box_detection=True,
-            constraint_timeconst=0.004,
+            constraint_timeconst=constraint_timeconst,
             max_collision_pairs=max_collision_pairs,
         ),
         viewer_options=gs.options.ViewerOptions(
