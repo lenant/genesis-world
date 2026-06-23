@@ -6,48 +6,33 @@ import numpy as np
 import genesis as gs
 from genesis.vis.keybindings import Key, KeyAction, Keybind
 
-
-# Public KLASK references list a 30 x 40 cm playfield and an approximately 3 cm goal.
-# The ball/striker/biscuit sizes and material parameters below are real-scale approximations.
-SIM_DT = 1 / 240
-BOARD_WIDTH = 0.40
-BOARD_HEIGHT = 0.30
-GOAL_WIDTH = 0.03
-
-STRIKER_RADIUS = 0.014
-BALL_RADIUS = 0.005
-BISCUIT_RADIUS = 0.0065
-BISCUIT_Y = (-0.06, 0.0, 0.06)
-
-TABLE_THICKNESS = 0.012
-WALL_THICKNESS = 0.012
-WALL_HEIGHT = 0.025
-STRIKER_HEIGHT = 0.028
-BISCUIT_HEIGHT = 0.008
-GOAL_TRAY_DEPTH = 0.035
-DISC_CLEARANCE = 0.0005
-
-TABLE_CENTER_Z = TABLE_THICKNESS / 2.0
-TABLE_TOP_Z = TABLE_THICKNESS
-STRIKER_Z = TABLE_TOP_Z + STRIKER_HEIGHT / 2.0 + DISC_CLEARANCE
-BALL_Z = TABLE_TOP_Z + BALL_RADIUS + DISC_CLEARANCE
-BISCUIT_Z = TABLE_TOP_Z + BISCUIT_HEIGHT / 2.0 + DISC_CLEARANCE
-
-HANDLE_SPEED = 4.95
-MAX_HANDLE_VEL = 10.8
-BALL_MAX_SPEED = 1.5
-
-LEFT_START = np.array([-0.11, 0.0], dtype=np.float32)
-RIGHT_START = np.array([0.11, 0.0], dtype=np.float32)
-
-BOARD_COLOR = (0.07, 0.34, 0.36, 1.0)
-RAIL_COLOR = (0.93, 0.91, 0.83, 1.0)
-LINE_COLOR = (0.82, 0.88, 0.83, 1.0)
-LEFT_COLOR = (0.92, 0.32, 0.29, 1.0)
-RIGHT_COLOR = (0.29, 0.49, 0.92, 1.0)
-BALL_COLOR = (0.96, 0.96, 0.93, 1.0)
-BISCUIT_COLOR = (0.42, 0.43, 0.43, 1.0)
-GOAL_COLOR = (0.16, 0.16, 0.16, 1.0)
+from klask_common import (
+    BALL_MAX_SPEED,
+    BALL_RADIUS,
+    BALL_START_MAX_X,
+    BALL_START_MIN_X,
+    BALL_START_Y_RANGE,
+    BALL_Z,
+    BOARD_HEIGHT,
+    BOARD_WIDTH,
+    BISCUIT_Y,
+    BISCUIT_Z,
+    GOAL_WIDTH,
+    HANDLE_SPEED,
+    LEFT_START,
+    MAX_HANDLE_VEL,
+    RIGHT_START,
+    STRIKER_Z,
+    add_ball,
+    add_biscuits,
+    add_striker,
+    build_board,
+    create_scene,
+    parse_backend,
+    set_body_state,
+    striker_x_bounds,
+    striker_y_bounds,
+)
 
 
 class PlayerController:
@@ -73,137 +58,14 @@ class PlayerController:
         return direction * HANDLE_SPEED
 
 
-def parse_backend(name):
-    if name == "auto":
-        return None
-    return getattr(gs, name)
-
-
-def add_box(scene, pos, size, color, *, collision=True, friction=0.4):
-    return scene.add_entity(
-        morph=gs.morphs.Box(pos=pos, size=size, fixed=True, collision=collision),
-        material=gs.materials.Rigid(friction=friction),
-        surface=gs.surfaces.Default(color=color),
-    )
-
-
-def add_cylinder(scene, pos, radius, height, color, *, rho=600, friction=0.35, gravity_compensation=0.0):
-    return scene.add_entity(
-        morph=gs.morphs.Cylinder(pos=pos, radius=radius, height=height),
-        material=gs.materials.Rigid(rho=rho, friction=friction, gravity_compensation=gravity_compensation),
-        surface=gs.surfaces.Default(color=color),
-    )
-
-
-def add_sphere(scene, pos, radius, color, *, rho=1000, friction=0.18):
-    return scene.add_entity(
-        morph=gs.morphs.Sphere(pos=pos, radius=radius),
-        material=gs.materials.Rigid(rho=rho, friction=friction),
-        surface=gs.surfaces.Default(color=color),
-    )
-
-
-def build_board(scene):
-    half_w = BOARD_WIDTH / 2.0
-    half_h = BOARD_HEIGHT / 2.0
-    goal_half = GOAL_WIDTH / 2.0
-
-    add_box(
-        scene,
-        (0.0, 0.0, TABLE_CENTER_Z),
-        (BOARD_WIDTH, BOARD_HEIGHT, TABLE_THICKNESS),
-        BOARD_COLOR,
-        friction=0.18,
-    )
-
-    rail_z = TABLE_TOP_Z + WALL_HEIGHT / 2.0
-    add_box(
-        scene,
-        (0.0, half_h + WALL_THICKNESS / 2.0, rail_z),
-        (BOARD_WIDTH, WALL_THICKNESS, WALL_HEIGHT),
-        RAIL_COLOR,
-        friction=0.45,
-    )
-    add_box(
-        scene,
-        (0.0, -half_h - WALL_THICKNESS / 2.0, rail_z),
-        (BOARD_WIDTH, WALL_THICKNESS, WALL_HEIGHT),
-        RAIL_COLOR,
-        friction=0.45,
-    )
-
-    side_segment = (BOARD_HEIGHT - GOAL_WIDTH) / 2.0
-    for x in (-half_w - WALL_THICKNESS / 2.0, half_w + WALL_THICKNESS / 2.0):
-        add_box(
-            scene,
-            (x, -(goal_half + side_segment / 2.0), rail_z),
-            (WALL_THICKNESS, side_segment, WALL_HEIGHT),
-            RAIL_COLOR,
-            friction=0.45,
-        )
-        add_box(
-            scene,
-            (x, goal_half + side_segment / 2.0, rail_z),
-            (WALL_THICKNESS, side_segment, WALL_HEIGHT),
-            RAIL_COLOR,
-            friction=0.45,
-        )
-
-    for sign in (-1.0, 1.0):
-        tray_x = sign * (half_w + GOAL_TRAY_DEPTH / 2.0)
-        add_box(
-            scene,
-            (tray_x, 0.0, TABLE_CENTER_Z),
-            (GOAL_TRAY_DEPTH, GOAL_WIDTH, TABLE_THICKNESS),
-            GOAL_COLOR,
-            friction=0.35,
-        )
-        add_box(
-            scene,
-            (sign * (half_w + GOAL_TRAY_DEPTH), 0.0, rail_z),
-            (WALL_THICKNESS, GOAL_WIDTH, WALL_HEIGHT),
-            RAIL_COLOR,
-            friction=0.45,
-        )
-
-    # Visual field markings only.
-    add_box(
-        scene,
-        (0.0, 0.0, TABLE_TOP_Z + 0.001),
-        (0.003, BOARD_HEIGHT * 0.88, 0.001),
-        LINE_COLOR,
-        collision=False,
-    )
-    add_box(
-        scene,
-        (-half_w + 0.03, 0.0, TABLE_TOP_Z + 0.001),
-        (0.002, GOAL_WIDTH, 0.001),
-        LINE_COLOR,
-        collision=False,
-    )
-    add_box(
-        scene,
-        (half_w - 0.03, 0.0, TABLE_TOP_Z + 0.001),
-        (0.002, GOAL_WIDTH, 0.001),
-        LINE_COLOR,
-        collision=False,
-    )
-
-
-def set_body_state(entity, xy, z, *, zero_velocity=True):
-    entity.set_pos((float(xy[0]), float(xy[1]), z), zero_velocity=zero_velocity)
-    entity.set_quat((1.0, 0.0, 0.0, 0.0), zero_velocity=False)
-    entity.set_dofs_velocity(np.zeros(entity.n_dofs, dtype=np.float32))
-
-
 def reset_round(left, right, ball, biscuits, left_controller, right_controller, rng):
     left_controller.reset()
     right_controller.reset()
     set_body_state(left, LEFT_START, STRIKER_Z)
     set_body_state(right, RIGHT_START, STRIKER_Z)
 
-    ball_x = rng.choice((-1.0, 1.0)) * rng.uniform(0.05, 0.10)
-    ball_y = rng.uniform(-0.02, 0.02)
+    ball_x = rng.choice((-1.0, 1.0)) * rng.uniform(BALL_START_MIN_X, BALL_START_MAX_X)
+    ball_y = rng.uniform(-BALL_START_Y_RANGE, BALL_START_Y_RANGE)
     set_body_state(ball, (ball_x, ball_y), BALL_Z)
 
     for biscuit, y in zip(biscuits, BISCUIT_Y, strict=True):
@@ -233,7 +95,8 @@ def drive_handle(entity, controller):
         ],
         dtype=np.float32,
     )
-    if abs(pos[0] - clamped_xy[0]) > 1e-4 or abs(pos[1] - clamped_xy[1]) > 1e-4 or abs(pos[2] - STRIKER_Z) > 0.003:
+    z_off = abs(pos[2] - STRIKER_Z)
+    if abs(pos[0] - clamped_xy[0]) > 1e-4 or abs(pos[1] - clamped_xy[1]) > 1e-4 or z_off > 0.003:
         entity.set_pos((float(clamped_xy[0]), float(clamped_xy[1]), STRIKER_Z), zero_velocity=False)
     entity.set_quat((1.0, 0.0, 0.0, 0.0), zero_velocity=False)
 
@@ -298,66 +161,19 @@ def main():
 
     gs.init(backend=parse_backend(args.backend), precision="32")
 
-    scene = gs.Scene(
-        sim_options=gs.options.SimOptions(dt=SIM_DT, substeps=4, gravity=(0.0, 0.0, -9.81)),
-        rigid_options=gs.options.RigidOptions(
-            enable_collision=True,
-            box_box_detection=True,
-            constraint_timeconst=0.004,
-            max_collision_pairs=256,
-        ),
-        viewer_options=gs.options.ViewerOptions(
-            camera_pos=(0.0, -0.46, 0.32),
-            camera_lookat=(0.0, 0.0, 0.02),
-            camera_fov=50,
-            max_FPS=60,
-        ),
-        vis_options=gs.options.VisOptions(show_world_frame=False),
-        profiling_options=gs.options.ProfilingOptions(show_FPS=False),
-        show_viewer=args.vis,
-    )
-
+    scene = create_scene(show_viewer=args.vis, rendered_envs=1)
     build_board(scene)
-    left = add_cylinder(
-        scene,
-        (LEFT_START[0], LEFT_START[1], STRIKER_Z),
-        STRIKER_RADIUS,
-        STRIKER_HEIGHT,
-        LEFT_COLOR,
-        rho=5000,
-        gravity_compensation=1.0,
-    )
-    right = add_cylinder(
-        scene,
-        (RIGHT_START[0], RIGHT_START[1], STRIKER_Z),
-        STRIKER_RADIUS,
-        STRIKER_HEIGHT,
-        RIGHT_COLOR,
-        rho=5000,
-        gravity_compensation=1.0,
-    )
-    ball = add_sphere(scene, (0.07, 0.02, BALL_Z), BALL_RADIUS, BALL_COLOR, rho=1000, friction=0.16)
-    biscuits = [
-        add_cylinder(scene, (0.0, y, BISCUIT_Z), BISCUIT_RADIUS, BISCUIT_HEIGHT, BISCUIT_COLOR, rho=800, friction=0.4)
-        for y in BISCUIT_Y
-    ]
+    left = add_striker(scene, "left")
+    right = add_striker(scene, "right")
+    ball = add_ball(scene)
+    biscuits = add_biscuits(scene)
 
     scene.build()
 
     half_w = BOARD_WIDTH / 2.0
-    half_h = BOARD_HEIGHT / 2.0
     goal_half = GOAL_WIDTH / 2.0
-    handle_y_bounds = (-half_h + STRIKER_RADIUS, half_h - STRIKER_RADIUS)
-    left_controller = PlayerController(
-        LEFT_START,
-        (-half_w + STRIKER_RADIUS, -STRIKER_RADIUS),
-        handle_y_bounds,
-    )
-    right_controller = PlayerController(
-        RIGHT_START,
-        (STRIKER_RADIUS, half_w - STRIKER_RADIUS),
-        handle_y_bounds,
-    )
+    left_controller = PlayerController(LEFT_START, striker_x_bounds("left"), striker_y_bounds())
+    right_controller = PlayerController(RIGHT_START, striker_x_bounds("right"), striker_y_bounds())
     rng = np.random.default_rng(args.seed)
     scores = {"left": 0, "right": 0}
 
