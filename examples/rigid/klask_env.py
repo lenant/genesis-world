@@ -662,7 +662,11 @@ def get_default_env_cfg(num_boards):
         "episode_length_s": 15.0,
         "sim_dt": sim_dt,
         "sim_substeps": 4,
-        "constraint_timeconst": 0.004,
+        # constraint_timeconst must stay comfortably above 2*sim_dt or stiff striker/ball
+        # contacts can produce NaN constraint forces. 2*sim_dt ~= 0.0042, so 0.004 sat right
+        # at the stability edge and blew up once the trained policy hit harder; 0.01 (~5*dt)
+        # gives a safe margin.
+        "constraint_timeconst": 0.01,
         "ctrl_dt": sim_dt * frame_skip,
         "frame_skip": frame_skip,
         # The playground uses a much faster manual-control speed. PPO starts with

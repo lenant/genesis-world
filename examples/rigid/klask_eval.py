@@ -16,6 +16,7 @@ from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 from klask_common import CTRL_DT, parse_backend
 from klask_env import KlaskSelfPlayEnv
+from klask_eval_lib import baseline_actions
 
 
 def resolve_checkpoint(log_dir, ckpt):
@@ -37,39 +38,16 @@ def resolve_checkpoint(log_dir, ckpt):
     raise FileNotFoundError(f"No checkpoint files found in {log_dir}")
 
 
-def baseline_actions(observations, opponent):
-    if opponent == "passive":
-        return torch.zeros((observations.shape[0], 2), dtype=observations.dtype, device=observations.device)
-    if opponent == "random":
-        return (
-            torch.rand(
-                (observations.shape[0], 2),
-                dtype=observations.dtype,
-                device=observations.device,
-            )
-            * 2.0
-            - 1.0
-        )
-
-    own_x = observations[:, 0]
-    own_y = observations[:, 1]
-    puck_x = observations[:, 8]
-    puck_y = observations[:, 9]
-    puck_vx = observations[:, 10]
-    defend = (puck_x < 0.05) | (puck_vx < -0.05)
-    target_x = torch.where(
-        defend,
-        torch.clamp(puck_x - 0.16, -0.82, -0.08),
-        torch.full_like(puck_x, -0.55),
-    )
-    target_y = torch.where(defend, puck_y, torch.clamp(puck_y * 0.75, -0.65, 0.65))
-    return torch.clamp(torch.stack([target_x - own_x, target_y - own_y], dim=1) * 2.8, -1.0, 1.0)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--exp_name", type=str, default="klask_selfplay")
     parser.add_argument("--ckpt", type=int, default=300)
+    parser.add_argument(
+        "--best",
+        action="store_true",
+        default=False,
+        help="load best_model.pt (selected during training) instead of --ckpt",
+    )
     parser.add_argument("--num_boards", type=int, default=1)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("-v", "--vis", action="store_true", default=False)
@@ -107,7 +85,13 @@ def main():
     )
 
     runner = OnPolicyRunner(env, train_cfg, log_dir, device=gs.device)
-    ckpt_path = resolve_checkpoint(log_dir, args.ckpt)
+    if args.best:
+        ckpt_path = log_dir / "best_model.pt"
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"{ckpt_path} not found (run training with periodic eval first).")
+    else:
+        ckpt_path = resolve_checkpoint(log_dir, args.ckpt)
+    print(f"Loading checkpoint {ckpt_path}")
     runner.load(ckpt_path, map_location=gs.device)
     policy = runner.get_inference_policy(device=gs.device)
 
@@ -117,7 +101,8 @@ def main():
         env.record_cam.start_recording()
 
     obs_dict = env.reset()
-    max_steps = args.steps or int(env_cfg["episode_length_s"] / CTRL_DT)
+    ctrl_dt = env_cfg.get("ctrl_dt", CTRL_DT)
+    max_steps = args.steps or int(env_cfg["episode_length_s"] / ctrl_dt)
     left_wins = 0
     right_wins = 0
     with torch.no_grad():
@@ -125,6 +110,7 @@ def main():
             actions = policy(obs_dict)
             if args.opponent != "self":
                 right_obs = obs_dict["policy"][args.num_boards :]
+                actions = actions.clone()
                 actions[args.num_boards :] = baseline_actions(right_obs, args.opponent)
 
             obs_dict, _, dones, infos = env.step(actions)
@@ -148,7 +134,7 @@ def main():
 
     if args.record:
         output_path = video_dir / "klask_eval.mp4"
-        env.record_cam.stop_recording(save_to_filename=str(output_path), fps=int(1.0 / CTRL_DT))
+        env.record_cam.stop_recording(save_to_filename=str(output_path), fps=int(1.0 / ctrl_dt))
         print(f"Saved {output_path}")
 
     print(f"Eval finished. Approx score: left {left_wins} - right {right_wins}")
