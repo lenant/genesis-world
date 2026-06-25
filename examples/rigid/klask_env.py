@@ -139,6 +139,7 @@ class KlaskSelfPlayEnv:
             "action",
             "biscuit_attach",
             "biscuit_pull",
+            "own_side",
             "terminal",
         )
         self.episode_sums = {
@@ -548,6 +549,10 @@ class KlaskSelfPlayEnv:
                 + self.reward_cfg["biscuit_attach_penalty"] * self.new_biscuit_attachments[:, side_idx]
             ),
             "biscuit_pull": -self.reward_cfg["biscuit_proximity_penalty"] * proximity,
+            # Small per-step penalty while the ball sits on the agent's own half
+            # (ball_x < 0 in the canonical frame), encouraging offense. klask-2 "simple".
+            "own_side": -self.reward_cfg.get("own_side_penalty", 0.0)
+            * (ball_x < 0.0).to(gs.tc_float),
             "terminal": torch.zeros((self.num_boards,), dtype=gs.tc_float, device=self.device),
         }
 
@@ -685,8 +690,10 @@ def get_default_env_cfg(num_boards):
     }
 
 
-def get_default_reward_cfg():
-    return {
+REWARD_PROFILES = {
+    # Dense puck-shaping; biscuit-grabbing barely penalized. Lets the biscuit
+    # "collect 2 = concede" mechanic dominate scoring (goals stay rare).
+    "balanced": {
         "terminal_goal": 12.0,
         "out_of_bounds_penalty": 4.0,
         "progress": 0.6,
@@ -699,6 +706,38 @@ def get_default_reward_cfg():
         "biscuit_attached_penalty": 0.05,
         "biscuit_attach_penalty": 0.0,
         "biscuit_proximity_penalty": 0.01,
+        "own_side_penalty": 0.0,
         "time_penalty": 0.0005,
         "action_penalty": 0.0003,
-    }
+    },
+    # Sparse: only goal/out-of-bounds terminals drive reward, biscuit-attach is
+    # heavily penalized, plus a tiny own-half penalty for offense. Port of the
+    # klask-2 "simple" profile that learned to actually shoot goals.
+    "simple": {
+        "terminal_goal": 12.0,
+        "out_of_bounds_penalty": 4.0,
+        "progress": 0.0,
+        "puck_position": 0.0,
+        "puck_speed": 0.0,
+        "contact": 0.0,
+        "puck_distance": 0.0,
+        "defense": 0.0,
+        "own_goal_danger": 0.0,
+        "biscuit_attached_penalty": 0.0,
+        "biscuit_attach_penalty": 2.0,
+        "biscuit_proximity_penalty": 0.05,
+        "own_side_penalty": 0.01,
+        "time_penalty": 0.0,
+        "action_penalty": 0.0,
+    },
+}
+
+
+def get_reward_cfg(profile="balanced"):
+    if profile not in REWARD_PROFILES:
+        raise ValueError(f"unknown reward profile {profile!r}; expected one of: {', '.join(REWARD_PROFILES)}")
+    return dict(REWARD_PROFILES[profile])
+
+
+def get_default_reward_cfg():
+    return get_reward_cfg("balanced")

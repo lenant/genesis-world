@@ -20,7 +20,7 @@ from rsl_rl.runners import OnPolicyRunner
 
 import genesis as gs
 from klask_common import parse_backend
-from klask_env import KlaskSelfPlayEnv, get_default_env_cfg, get_default_reward_cfg
+from klask_env import REWARD_PROFILES, KlaskSelfPlayEnv, get_default_env_cfg, get_reward_cfg
 from klask_eval_lib import rollout_eval
 
 
@@ -209,6 +209,12 @@ def main():
     )
     parser.add_argument("--keep_logs", action="store_true", help="do not delete an existing log directory")
     parser.add_argument(
+        "--reward_profile",
+        choices=tuple(REWARD_PROFILES),
+        default="balanced",
+        help="reward shaping profile ('balanced' = dense; 'simple' = sparse, anti-biscuit)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         default=False,
@@ -259,8 +265,23 @@ def main():
         shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    env_cfg = get_default_env_cfg(args.num_boards)
-    reward_cfg = get_default_reward_cfg()
+    cfgs_path = log_dir / "cfgs.pkl"
+    if args.resume and cfgs_path.exists():
+        # Preserve the exact reward + physics the checkpoint was trained with; silently
+        # switching the reward profile on resume would corrupt the run's objective.
+        with open(cfgs_path, "rb") as f:
+            env_cfg, reward_cfg, _ = pickle.load(f)
+        reward_cfg.setdefault("own_side_penalty", 0.0)
+        print(f"Resume: loaded saved reward+env cfg from {cfgs_path} (reward profile preserved).")
+    else:
+        env_cfg = get_default_env_cfg(args.num_boards)
+        reward_cfg = get_reward_cfg(args.reward_profile)
+        print(f"Reward profile: {args.reward_profile}")
+
+    # Session-level settings that may legitimately change between (re)launches.
+    env_cfg["num_boards"] = args.num_boards
+    env_cfg.pop("record_camera", None)
+    env_cfg.pop("record_res", None)
     if args.vis:
         env_cfg["rendered_envs"] = min(4, args.num_boards)
 
@@ -275,7 +296,7 @@ def main():
     save_interval = max(1, min(args.save_interval, args.max_iterations))
     train_cfg = get_train_cfg(args.exp_name, args.num_steps_per_env, save_interval)
 
-    with open(log_dir / "cfgs.pkl", "wb") as f:
+    with open(cfgs_path, "wb") as f:
         pickle.dump([env_cfg, reward_cfg, train_cfg], f)
 
     env = KlaskSelfPlayEnv(
